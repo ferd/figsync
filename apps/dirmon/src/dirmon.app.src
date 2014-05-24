@@ -1,0 +1,12 @@
+{application, dirmon, [
+  {description, "Directory monitor that shoves stuff in Peeranha"},
+  {vsn, "0.1.0"},
+  {registered, [dirmon]},
+  {applications, [kernel, stdlib, crypto, gproc, peeranha, file_monitor]},
+  {mod, {dirmon_app, []}},
+  {env, [
+    {monitored_paths, []},
+    {tmp_path, "/tmp/figsync/"}, % where files during transfers go.
+    {db_path, "./figsyncdb/"}
+  ]}
+]}.
