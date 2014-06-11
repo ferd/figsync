@@ -73,14 +73,39 @@ end_per_testcase(_Name, Config) ->
 %% |    | Pull 1 -> 2 | B           | B           | B           |
 %% |    |             | B           | B           | B           |
 %% +----+-------------+-------------+-------------+-------------+
-%% | 06 | Move 2.A=>B | A1,B1       | A1,B1       | N/A         |
+%% | 06 | Move 1.A=>B | A1,B1       | A1,B1       | N/A         |
 %% |    | Pull 2 -> 1 | B2          | A1,B1       | N/A         |
 %% |    | Pull 1 -> 2 | B2          | A1,B1       | N/A         |
 %% |    |             | B2          | B2          | N/A         |
 %% +----+-------------+-------------+-------------+-------------+
+%% | 07 | Add 1.A1    | Ø           | Ø           | Ø           |
+%% |    | Add 2.A2    | A1          | Ø           | Ø           |
+%% |    | Pull 2 -> 1 | A1          | A2          | Ø           |
+%% |    | Add 3.A3    | A1.c,A2.c   | A2          | Ø           |
+%% |    | Pull 3 -> 1 | A1.c,A2.c   | A2          | A3          |
+%% |    | Pull 1 -> 3 | (A1,A2,A3).c| A2          | A3          |
+%% |    | Del 1.A2    | (A1,A2,A3).c| A2          | (A1,A2,A3).c|
+%% |    | Pull 3 -> 1 | (A1,A3).c   | A2          | (A1,A2,A3).c|
+%% |    | Del 1.A2    | (A1,A2,A3).c| A2          | (A1,A2,A3).c| * conflict wasn't resolved, gets recreated
+%% |    | Del 1.A1    | (A1,A3).c   | A2          | (A1,A2,A3).c|
+%% |    | Pull 1 -> 2 | A3          | A2          | (A1,A2,A3).c|
+%% |    | Pull 2 -> 3 | A3          | A3          | (A1,A2,A3).c|
+%% |    |             | A3          | A3          | A3          |
+%% +----+-------------+-------------+-------------+-------------+
 
 %% Possible cases, with failures/interrupts during syncs:
 %%  TODO
+%%
+
+%% Notes:
+%% File monitor needs to monitor a directory, and then all the files in it
+%% one by one apparently. returns {file_monitor, Ref, {changed, Dir, Type, FileInfo, Ops}
+%% where Ops is a list of {Action, File}, Action :: added | deleted.
+%% If Ops = empty, the file's content itself changed.
+%%
+%%
+%% Should use automonitor to get files tracked automatically.
+%% New files get the {file_monitor, Ref, {found, Path,Tpe, FileInfo, []}} msg.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%
 %%% PRIVATE / HELPERS %%%
