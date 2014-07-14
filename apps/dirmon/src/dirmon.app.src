@@ -5,8 +5,8 @@
   {applications, [kernel, stdlib, crypto, gproc, peeranha, file_monitor]},
   {mod, {dirmon_app, []}},
   {env, [
-    {monitored_paths, []},
     {tmp_path, "/tmp/figsync/"}, % where files during transfers go.
-    {db_path, "./figsyncdb/"}
+    {db_path, "./figsyncdb/"} % where all the DB paths will go
+  % {monitored_paths, []} % handled dynamically
   ]}
 ]}.

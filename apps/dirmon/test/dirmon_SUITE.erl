@@ -2,7 +2,7 @@
 -include_lib("common_test/include/ct.hrl").
 -compile(export_all).
 
-all() -> [].
+all() -> [boot_up].
 groups() -> [].
 
 %%%%%%%%%%%%%%%%%%%%%%
@@ -10,26 +10,60 @@ groups() -> [].
 %%%%%%%%%%%%%%%%%%%%%%
 
 init_per_suite(Config) ->
-    %% Overwrite basic config for database directory
-    ok = application:load(dirmon),
-    application:set_env(db_path, ?config(priv_dir, Config)),
     Config.
 
 end_per_suite(Config) ->
+    Config.
+
+init_per_testcase(Name, Config) ->
+    Priv = ?config(priv_dir, Config),
+    Data = ?config(data_dir, Config),
+    [Db, Img1, Img2, Img3] = init_dirs(Data, Priv, atom_to_list(Name)),
+    %% Overwrite basic config for database directory
+    ok = application:load(dirmon),
+    application:set_env(dirmon, db_path, Db),
+    {ok, Started} = application:ensure_all_started(dirmon),
+    [{started, Started}, {dirs, [Img1,Img2,Img3]} | Config].
+
+end_per_testcase(_Name, Config) ->
+    [application:stop(App) || App <- ?config(started, Config)],
     ok = application:unload(dirmon),
     Config.
 
-init_per_testcase(_Name, Config) ->
-    Config.
-
-end_per_testcase(_Name, Config) ->
-    Config.
+init_dirs(Data, Root, Test) ->
+    Paths = [Db = filename:join([Root, Test, "db/"]),
+             Img1=filename:join([Root, Test, "img1/"]),
+             Img2=filename:join([Root, Test, "img2/"]),
+             Img3=filename:join([Root, Test, "img3/"])],
+    ok = filelib:ensure_dir(filename:join([Db, ".ensured"])),
+    {ok, Names} = file:list_dir(Data),
+    [file:copy(filename:join([Data,Name]),
+               filename:join([Img1, Name])) || Name <- Names],
+    [file:copy(filename:join([Data,Name]),
+               filename:join([Img2, Name])) || Name <- Names],
+    [file:copy(filename:join([Data,Name]),
+               filename:join([Img3, Name])) || Name <- Names],
+    Paths.
 
 %%%%%%%%%%%%%
 %%% TESTS %%%
 %%%%%%%%%%%%%
 
 %% Scan a directory for the first time and find all the images
+boot_up(Config) ->
+    %% Should have no child
+    [] = supervisor:which_children(dirmon_tracker_sup),
+    %% Track a dir
+    Dir = hd(?config(dirs, Config)),
+    tracked = dirmon:track(some_name, Dir),
+    already_tracked = dirmon:track(some_name, Dir),
+    %% Should have a child.
+    [_] = supervisor:which_children(dirmon_tracker_sup),
+    %% Shut down, restart app, should have a child
+    [application:stop(App) || App <- ?config(started, Config)],
+    {ok, _} = application:ensure_all_started(dirmon),
+    already_tracked = dirmon:track(some_name, Dir),
+    [_] = supervisor:which_children(dirmon_tracker_sup).
 
 %% Scan multiple directories for the first time and find all the images
 %% Without confusing them
