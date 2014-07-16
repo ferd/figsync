@@ -28,13 +28,11 @@ add_db(Db = {_Name, _UUID, _Dir, _Type}) ->
     end.
 
 check_extension(Path) ->
-    Exts = application:get_env(dirmon, ignored_extensions, []),
-    try 
-       _ = [case binary:longest_common_suffix([Path, Ext]) of
-            Len when Len =:= byte_size(Ext) -> throw(ignored);
-            _ -> ok
-        end || Ext <- Exts],
-       accepted
-    catch
-        ignored -> ignored
+    Check = lists:any(
+        fun(Ext) -> binary:longest_common_suffix([Path, Ext]) =:= byte_size(Ext) end,
+        application:get_env(dirmon, ignored_extensions, [])
+    ),
+    case Check of
+        true -> ignored;
+        false -> accepted
     end.
