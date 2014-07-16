@@ -1,5 +1,6 @@
 -module(dirmon_utils).
 -export([find_dbs/0, add_db/1]).
+-export([check_extension/1]).
 
 find_dbs() ->
     {ok, Path} = application:get_env(dirmon, db_path),
@@ -13,7 +14,27 @@ find_dbs() ->
 add_db(Db = {_Name, _UUID, _Dir, _Type}) ->
     {ok, Path} = application:get_env(dirmon, db_path),
     Store = filename:join(Path, "tracking.consult"),
-    {ok, Io} = file:open(Store, [append]),
-    io:format(Io, "~p.~n", [Db]),
-    file:close(Io),
-    ok.
+    Existing = case find_dbs() of
+        {ok, List} -> List;
+        {error, not_found} -> []
+    end,
+    case lists:member(Db, Existing) of
+        true ->
+            ok;
+        false ->
+            {ok, Io} = file:open(Store, [append]),
+            io:format(Io, "~p.~n", [Db]),
+            file:close(Io)
+    end.
+
+check_extension(Path) ->
+    Exts = application:get_env(dirmon, ignored_extensions, []),
+    try 
+       _ = [case binary:longest_common_suffix([Path, Ext]) of
+            Len when Len =:= byte_size(Ext) -> throw(ignored);
+            _ -> ok
+        end || Ext <- Exts],
+       accepted
+    catch
+        ignored -> ignored
+    end.

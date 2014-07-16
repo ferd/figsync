@@ -2,7 +2,7 @@
 -include_lib("common_test/include/ct.hrl").
 -compile(export_all).
 
-all() -> [boot_up].
+all() -> [boot_up, track_files].
 groups() -> [].
 
 %%%%%%%%%%%%%%%%%%%%%%
@@ -36,6 +36,9 @@ init_dirs(Data, Root, Test) ->
              Img2=filename:join([Root, Test, "img2/"]),
              Img3=filename:join([Root, Test, "img3/"])],
     ok = filelib:ensure_dir(filename:join([Db, ".ensured"])),
+    ok = filelib:ensure_dir(filename:join([Img1, ".ensured"])),
+    ok = filelib:ensure_dir(filename:join([Img2, ".ensured"])),
+    ok = filelib:ensure_dir(filename:join([Img3, ".ensured"])),
     {ok, Names} = file:list_dir(Data),
     [file:copy(filename:join([Data,Name]),
                filename:join([Img1, Name])) || Name <- Names],
@@ -55,15 +58,27 @@ boot_up(Config) ->
     [] = supervisor:which_children(dirmon_tracker_sup),
     %% Track a dir
     Dir = hd(?config(dirs, Config)),
-    tracked = dirmon:track(some_name, Dir),
-    already_tracked = dirmon:track(some_name, Dir),
+    tracked = dirmon:track("some_name", Dir),
+    already_tracked = dirmon:track("some_name", Dir),
     %% Should have a child.
     [_] = supervisor:which_children(dirmon_tracker_sup),
     %% Shut down, restart app, should have a child
     [application:stop(App) || App <- ?config(started, Config)],
     {ok, _} = application:ensure_all_started(dirmon),
-    already_tracked = dirmon:track(some_name, Dir),
+    already_tracked = dirmon:track("some_name", Dir),
     [_] = supervisor:which_children(dirmon_tracker_sup).
+
+%% scan a directory, wait a bit, see that the files are there
+%% in the DB
+track_files(Config) ->
+    Dir = hd(?config(dirs, Config)),
+    tracked = dirmon:track("some_name", Dir),
+    timer:sleep(500),
+    {ok, _} = peeranha:read("some_name", list_to_binary(filename:join(Dir, "1.gif"))),
+    {ok, _} = peeranha:read("some_name", list_to_binary(filename:join(Dir, "2.gif"))),
+    {ok, _} = peeranha:read("some_name", list_to_binary(filename:join(Dir, "3.gif"))),
+    {error, undefined} = peeranha:read("some_name", list_to_binary(filename:join(Dir, "ignore.part"))).
+
 
 %% Scan multiple directories for the first time and find all the images
 %% Without confusing them

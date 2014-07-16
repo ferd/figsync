@@ -6,7 +6,8 @@
   {mod, {dirmon_app, []}},
   {env, [
     {tmp_path, "/tmp/figsync/"}, % where files during transfers go.
-    {db_path, "./figsyncdb/"} % where all the DB paths will go
+    {db_path, "./figsyncdb/"}, % where all the DB paths will go
+    {ignored_extensions, [<<".part">>, <<".conflict">>]}
   % {monitored_paths, []} % handled dynamically
   ]}
 ]}.
