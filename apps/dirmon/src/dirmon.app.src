@@ -7,7 +7,8 @@
   {env, [
     {tmp_path, "/tmp/figsync/"}, % where files during transfers go.
     {db_path, "./figsyncdb/"}, % where all the DB paths will go
-    {ignored_extensions, [<<".part">>, <<".conflict">>]}
+    {ignored_extensions, [<<".part">>, <<".conflict">>]},
+    {monitor_interval, 5000} % 5 seconds
   % {monitored_paths, []} % handled dynamically
   ]}
 ]}.

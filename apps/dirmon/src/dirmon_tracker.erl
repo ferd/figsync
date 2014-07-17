@@ -31,13 +31,14 @@ start_link(MonitorName, DbName, DbUUID, Dir, Type) ->
 
 init({MonitorName, DbName, DbUUID, Dir, Type}) ->
     process_flag(trap_exit, true), % wait for ops to finish if possible
-    ok = init_db(DbName, DbUUID, Dir, Type),
-    ct:pal("Dir: ~p",[Dir]),
+    ok = init_db(DbName, DbUUID, dirmon_utils:db_dir(), Type, Dir),
     {ok, Ref, BinDir} = file_monitor:automonitor(MonitorName, Dir, []),
-    %% Load existing files and dirs
-    %% Scan everything
-    %% Find SHAs and stuff
-    %% Merge the diff?
+    %% Somehow automonitors don't accept configs so we set it by hand
+    file_monitor:set_interval(MonitorName, dirmon_utils:monitor_interval()),
+    %% Because we set it by hand, there's a delay before we can get
+    %% the demanded interval. For the first time, force a manual poll
+    %% to schedule things at the right time.
+    MonitorName ! poll,
     {ok, #state{ref=Ref, dir=BinDir, db=DbName}}.
 
 handle_call(Request, _From, State) ->
@@ -125,7 +126,7 @@ handle_info({file_monitor, Ref, {changed, Path, file, _FileInfo, []}},
     update(Db, Path),
     error_logger:info_msg("Detected file update ~s", [Path]),
     {noreply, S};
-handle_info({file_monitor, Ref, {errpr, Path, file, enoent}},
+handle_info({file_monitor, Ref, {error, Path, file, enoent}},
             S=#state{ref=Ref, db=Db}) ->
     %% Deleted file
     %% the syncer cannot delete a file in a delete conflict, it must leave
@@ -147,22 +148,19 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
-init_db(Name, UUID, Dir, root) ->
-    ok = peeranha:boot(Name, [{type, root}, {dir, Dir}, {uuid, UUID}]),
-    dirmon_utils:add_db({Name, UUID, Dir, root});
-init_db(Name, UUID, Dir, normal) ->
+init_db(Name, UUID, Dir, Type, ToMonitor) ->
     %% TODO: handle non-initialized DB that needs to be fetched
-    %% from a peer.
-    ok = peeranha:boot(Name, [{type, normal}, {dir, Dir}, {uuid, UUID}]),
-    dirmon_utils:add_db({Name, UUID, Dir, normal}).
+    %% from a peer (type normal)
+    ok = peeranha:boot(Name, [{type, Type}, {dir, Dir}, {uuid, UUID}]),
+    dirmon_utils:add_db({Name, UUID, ToMonitor, Type}).
 
 maybe_add(Db, Path) ->
     case dirmon_utils:check_extension(Path) == accepted
       andalso peeranha:read(Db, Path) of
         false -> ignored;
-        {ok, _Val} -> already_tracked;
-        {conflict, deleted, _} -> already_tracked;
-        {conflict, _} -> already_tracked;
+        {ok, _Val} -> known;
+        {conflict, deleted, _} -> known;
+        {conflict, _} -> known;
         {error, undefined} ->
             Hash = hash_file(Path),
             peeranha:write(Db, Path, Hash),
@@ -172,26 +170,26 @@ maybe_add(Db, Path) ->
 update(Db, Path) ->
     %% handle: {internal, File, Hash, ..?} from sync mechanism
     %% or the sync mechanism only leaves the .part or .conflict extensions
-    %% and the merge acts as a final write to update
-    %% case peeranha:read(Db, Path) of
-    %%     {ok, Hash} ->
-    %%         ok;
-    %%     {conflict, deleted, Values} ->
-    %%         case lists:member(Hash, Values) of
-    %%             true ->
-    %%                 ok;
-    %%             false ->
-    %%                 peeranha:write(Db, Path, Hash)
-    %%         end;
-    %%     {conflict, Values} ->
-    %%         case lists:member(Hash, Values) of
-    %%             true ->
-    %%                 ok;
-    %%             false ->
-    %%                 peeranha:write(Db, Path, Hash)
-    %%         end
-    %% end.
-    peeranha:write(Db, Path, hash_file(Path)).
+    %% and the merge acts as a final write to update. However, because
+    %% the write is merged in the DB by peeranha already, we have to
+    %% avoid overwriting things for no reason
+    Hash = hash_file(Path),
+    case peeranha:read(Db, Path) of
+        {ok, Hash} -> 
+            ok;
+        {ok, _} ->
+            peeranha:write(Db, Path, Hash);
+        {conflict, deleted, Values} ->
+            case lists:member(Hash, Values) of
+                true -> ok;
+                false -> peeranha:write(Db, Path, Hash)
+            end;
+        {conflict, Values} ->
+            case lists:member(Hash, Values) of
+                true -> ok;
+                false -> peeranha:write(Db, Path, Hash)
+            end
+    end.
 
 delete(Db, Path) ->
     peeranha:delete(Db, Path).

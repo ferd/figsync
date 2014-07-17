@@ -1,5 +1,6 @@
 -module(dirmon_utils).
 -export([find_dbs/0, add_db/1]).
+-export([db_dir/0, monitor_interval/0]).
 -export([check_extension/1]).
 
 find_dbs() ->
@@ -26,6 +27,14 @@ add_db(Db = {_Name, _UUID, _Dir, _Type}) ->
             io:format(Io, "~p.~n", [Db]),
             file:close(Io)
     end.
+
+db_dir() ->
+    {ok, Path} = application:get_env(dirmon, db_path),
+    Path.
+
+monitor_interval() ->
+    {ok, Interval} = application:get_env(dirmon, monitor_interval),
+    Interval.
 
 check_extension(Path) ->
     Check = lists:any(

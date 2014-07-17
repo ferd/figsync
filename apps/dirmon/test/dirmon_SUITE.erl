@@ -1,7 +1,31 @@
 -module(dirmon_SUITE).
 -include_lib("common_test/include/ct.hrl").
+-include_lib("eunit/include/eunit.hrl").
 -compile(export_all).
 
+%% Macros to allow retrying until file monitor polls without waiting the
+%% max amount of time unless we really need to.
+-define(until_ok(Var, Action),
+    Var = (fun() ->
+        Fn=fun(_, 0) -> error(timeout)
+           ;  (F, T) -> case Action of
+                            {ok, X} -> X;
+                            _ -> timer:sleep(10), F(F, T-10)
+                        end
+        end,
+        Fn(Fn, 500)
+    end)()).
+-define(until_error(Var, Action),
+    Var = (fun() ->
+        Fn=fun(_, 0) -> error(timeout)
+           ;  (F, T) -> case Action of
+                            {error, X} -> X;
+                            _ -> timer:sleep(10), F(F, T-10)
+                        end
+        end,
+        Fn(Fn, 500)
+    end)()).
+            
 all() -> [boot_up, track_files].
 groups() -> [].
 
@@ -22,11 +46,12 @@ init_per_testcase(Name, Config) ->
     %% Overwrite basic config for database directory
     ok = application:load(dirmon),
     application:set_env(dirmon, db_path, Db),
+    application:set_env(dirmon, monitor_interval, 100),
     {ok, Started} = application:ensure_all_started(dirmon),
     [{started, Started}, {dirs, [Img1,Img2,Img3]} | Config].
 
 end_per_testcase(_Name, Config) ->
-    [application:stop(App) || App <- ?config(started, Config)],
+    [application:stop(App) || App <- lists:reverse(?config(started, Config))],
     ok = application:unload(dirmon),
     Config.
 
@@ -63,8 +88,10 @@ boot_up(Config) ->
     %% Should have a child.
     [_] = supervisor:which_children(dirmon_tracker_sup),
     %% Shut down, restart app, should have a child
-    [application:stop(App) || App <- ?config(started, Config)],
+    [application:stop(App) || App <- lists:reverse(?config(started, Config))],
     {ok, _} = application:ensure_all_started(dirmon),
+    %% already_tracked because some other process took over
+    %% when booting
     already_tracked = dirmon:track("some_name", Dir),
     [_] = supervisor:which_children(dirmon_tracker_sup).
 
@@ -72,12 +99,23 @@ boot_up(Config) ->
 %% in the DB
 track_files(Config) ->
     Dir = hd(?config(dirs, Config)),
+    Img1 = list_to_binary(filename:join(Dir, "1.gif")),
+    Img2 = list_to_binary(filename:join(Dir, "2.gif")),
+    Img3 = list_to_binary(filename:join(Dir, "3.gif")),
     tracked = dirmon:track("some_name", Dir),
-    timer:sleep(500),
-    {ok, _} = peeranha:read("some_name", list_to_binary(filename:join(Dir, "1.gif"))),
-    {ok, _} = peeranha:read("some_name", list_to_binary(filename:join(Dir, "2.gif"))),
-    {ok, _} = peeranha:read("some_name", list_to_binary(filename:join(Dir, "3.gif"))),
-    {error, undefined} = peeranha:read("some_name", list_to_binary(filename:join(Dir, "ignore.part"))).
+    %% See that the files are tracked
+    ?until_ok(_, peeranha:read("some_name", Img1)),
+    ?until_ok(_, peeranha:read("some_name", Img1)),
+    ?until_ok(Hash1, peeranha:read("some_name", Img2)),
+    ?until_ok(_, peeranha:read("some_name", Img3)),
+    ?until_error(undefined,
+                 peeranha:read("some_name", list_to_binary(filename:join(Dir, "ignore.part")))),
+    %% Move a file (copy -> delete) and see that it worked
+    {ok, _} = file:copy(Img1, Img2),
+    ok = file:delete(Img1),
+    ?until_error(undefined, peeranha:read("some_name", Img1)),
+    ?until_ok(Hash2, peeranha:read("some_name", Img2)),
+    ?assertNotEqual(Hash1, Hash2).
 
 
 %% Scan multiple directories for the first time and find all the images
