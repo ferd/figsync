@@ -31,7 +31,9 @@ start_link(MonitorName, DbName, DbUUID, Dir, Type) ->
 
 init({MonitorName, DbName, DbUUID, Dir, Type}) ->
     process_flag(trap_exit, true), % wait for ops to finish if possible
-    ok = init_db(DbName, DbUUID, dirmon_utils:db_dir(), Type, Dir),
+    ok = init_db(DbName, DbUUID,
+                 filename:join([dirmon_utils:db_dir(), DbName]),
+                 Type, Dir),
     {ok, Ref, BinDir} = file_monitor:automonitor(MonitorName, Dir, []),
     %% Somehow automonitors don't accept configs so we set it by hand
     file_monitor:set_interval(MonitorName, dirmon_utils:monitor_interval()),

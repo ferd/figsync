@@ -26,7 +26,7 @@
         Fn(Fn, 500)
     end)()).
             
-all() -> [boot_up, track_files].
+all() -> [boot_up, track_files, track_many_dirs].
 groups() -> [].
 
 %%%%%%%%%%%%%%%%%%%%%%
@@ -117,6 +117,32 @@ track_files(Config) ->
     ?until_ok(Hash2, peeranha:read("some_name", Img2)),
     ?assertNotEqual(Hash1, Hash2).
 
+%% scan a directory, wait a bit, see that the files are there
+%% in the DB, then monitor a second one, see that there's
+%% no conflict.
+track_many_dirs(Config) ->
+    [Dir1,Dir2|_] = ?config(dirs, Config),
+    Img1 = list_to_binary(filename:join(Dir1, "1.gif")),
+    Img2 = list_to_binary(filename:join(Dir1, "2.gif")),
+    Img3 = list_to_binary(filename:join(Dir1, "3.gif")),
+    ImgA = list_to_binary(filename:join(Dir2, "A.gif")),
+    ImgB = list_to_binary(filename:join(Dir2, "B.gif")),
+    ImgC = list_to_binary(filename:join(Dir2, "C.gif")),
+    tracked = dirmon:track("some_name", Dir1),
+    %% See that the files are tracked
+    ?until_ok(H1, peeranha:read("some_name", Img1)),
+    ?until_ok(H2, peeranha:read("some_name", Img2)),
+    ?until_ok(H3, peeranha:read("some_name", Img3)),
+    %% Second dir
+    tracked = dirmon:track("other_name", Dir2),
+    {ok,_} = file:copy(Img1,ImgC),
+    {ok,_} = file:copy(Img2,ImgB),
+    {ok,_} = file:copy(Img3,ImgA),
+    ?until_ok(H3, peeranha:read("other_name", ImgA)),
+    ?until_ok(H2, peeranha:read("other_name", ImgB)),
+    ?until_ok(H1, peeranha:read("other_name", ImgC)),
+    ?until_error(undefined, peeranha:read("some_name", ImgC)),
+    ?until_error(undefined, peeranha:read("other_name", Img1)).
 
 %% Scan multiple directories for the first time and find all the images
 %% Without confusing them
