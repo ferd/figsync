@@ -3,7 +3,7 @@
 -behaviour(gen_server).
 
 %% API
--export([start_link/5]).
+-export([start_link/6]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -16,25 +16,31 @@
 -record(state, {ref :: reference(), % file monitor ref
                 dir :: binary(), % file monitor dir
                 db  :: term()
-               }). 
+               }).
 
 %%%===================================================================
 %%% API
 %%%===================================================================
 
-start_link(MonitorName, DbName, DbUUID, Dir, Type) ->
-    gen_server:start_link(?MODULE, {MonitorName, DbName, DbUUID, Dir, Type}, []).
+start_link(MonitorName, ProviderName, DbName, DbUUID, Dir, Type) ->
+    gen_server:start_link(
+        ?MODULE,
+        {MonitorName, ProviderName, DbName, DbUUID, Dir, Type},
+        []
+    ).
 
 %%%===================================================================
 %%% gen_server callbacks
 %%%===================================================================
 
-init({MonitorName, DbName, DbUUID, Dir, Type}) ->
+init({MonitorName, ProviderName, DbName, DbUUID, Dir, Type}) ->
     process_flag(trap_exit, true), % wait for ops to finish if possible
     ok = init_db(DbName, DbUUID,
                  filename:join([dirmon_utils:db_dir(), DbName]),
                  Type, Dir),
     {ok, Ref, BinDir} = file_monitor:automonitor(MonitorName, Dir, []),
+    %% Tell the data provider that we're tracking this abs path.
+    dirmon_data_provider:add_abs(ProviderName, DbName, BinDir),
     %% Somehow automonitors don't accept configs so we set it by hand
     file_monitor:set_interval(MonitorName, dirmon_utils:monitor_interval()),
     %% Because we set it by hand, there's a delay before we can get
@@ -113,26 +119,29 @@ handle_info({file_monitor, Ref, {error, _, directory, enoent}},
             S=#state{ref=Ref}) ->
     %% Deleted directory
     {noreply, S};
-handle_info({file_monitor, Ref, {found, Path, file, _FileInfo, _Files}},
-            S=#state{ref=Ref, db=Db}) ->
+handle_info({file_monitor, Ref, {found, AbsPath, file, _FileInfo, _Files}},
+            S=#state{ref=Ref, db=Db, dir=Dir}) ->
     %% Found a file
-    case maybe_add(Db, Path) of
-        added -> error_logger:info_msg("Tracking file ~s", [Path]);
+    Path = make_relative(Dir, AbsPath),
+    case maybe_add(Db, Dir, Path) of
+        added -> error_logger:info_msg("Tracking file ~p", [Path]);
         known -> already_tracked;
         ignored -> ignored
-    end,       
+    end,
     {noreply, S};
-handle_info({file_monitor, Ref, {changed, Path, file, _FileInfo, []}},
-            S=#state{ref=Ref, db=Db}) ->
+handle_info({file_monitor, Ref, {changed, AbsPath, file, _FileInfo, []}},
+            S=#state{ref=Ref, db=Db, dir=Dir}) ->
     %% Updated file
-    update(Db, Path),
+    Path = make_relative(Dir, AbsPath),
+    update(Db, Dir, Path),
     error_logger:info_msg("Detected file update ~s", [Path]),
     {noreply, S};
-handle_info({file_monitor, Ref, {error, Path, file, enoent}},
-            S=#state{ref=Ref, db=Db}) ->
+handle_info({file_monitor, Ref, {error, AbsPath, file, enoent}},
+            S=#state{ref=Ref, db=Db, dir=Dir}) ->
     %% Deleted file
     %% the syncer cannot delete a file in a delete conflict, it must leave
     %% it as is.
+    Path = make_relative(Dir, AbsPath),
     delete(Db, Path),
     error_logger:info_msg("Stopped tracking file ~s", [Path]),
     {noreply, S};
@@ -156,7 +165,7 @@ init_db(Name, UUID, Dir, Type, ToMonitor) ->
     ok = peeranha:boot(Name, [{type, Type}, {dir, Dir}, {uuid, UUID}]),
     dirmon_utils:add_db({Name, UUID, ToMonitor, Type}).
 
-maybe_add(Db, Path) ->
+maybe_add(Db, Dir, Path) ->
     case dirmon_utils:check_extension(Path) == accepted
       andalso peeranha:read(Db, Path) of
         false -> ignored;
@@ -164,20 +173,20 @@ maybe_add(Db, Path) ->
         {conflict, deleted, _} -> known;
         {conflict, _} -> known;
         {error, undefined} ->
-            Hash = hash_file(Path),
+            Hash = hash_file(filename:join(Dir, Path)),
             peeranha:write(Db, Path, Hash),
             added
     end.
 
-update(Db, Path) ->
+update(Db, Dir, Path) ->
     %% handle: {internal, File, Hash, ..?} from sync mechanism
     %% or the sync mechanism only leaves the .part or .conflict extensions
     %% and the merge acts as a final write to update. However, because
     %% the write is merged in the DB by peeranha already, we have to
     %% avoid overwriting things for no reason
-    Hash = hash_file(Path),
+    Hash = hash_file(filename:join(Dir,Path)),
     case peeranha:read(Db, Path) of
-        {ok, Hash} -> 
+        {ok, Hash} ->
             ok;
         {ok, _} ->
             peeranha:write(Db, Path, Hash);
@@ -203,3 +212,7 @@ hash_file(Path) ->
     Hash = crypto:hash(sha, Data),
     iolist_to_binary([io_lib:format("~2.16.0B",[X]) || <<X:8>> <= Hash]).
 
+make_relative(Dir, Path) when is_binary(Dir), is_binary(Path) ->
+    Offset = byte_size(Dir),
+    Tot = byte_size(Path),
+    binary:part(Path, {Tot, (Offset-Tot)+1}). % +1 drops a separating '/'

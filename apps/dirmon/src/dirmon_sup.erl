@@ -12,8 +12,14 @@ start_link() ->
 
 init([]) ->
     MonName = dirmon_monitor,
+    DataName = dirmon_data_provider,
     {ok, {{rest_for_one, 1, 60},
-     [{file_monitor, {file_monitor, start_link, [{local,MonName}, []]},
+     [{file_monitor,
+       {file_monitor, start_link, [{local,MonName}, []]},
        permanent, 1000, worker, [file_monitor]},
-      {file_tracker_sup, {dirmon_tracker_sup, start_link, [MonName]},
+      {dist_data_provider,
+       {dirmon_data_provider, start_link, [{local,DataName}]},
+       permanent, 1000, worker, [dirmon_data_provider]},
+      {file_tracker_sup,
+       {dirmon_tracker_sup, start_link, [MonName, DataName]},
        permanent, 5000, supervisor, [dirmon_tracker_sup]}]}}.

@@ -25,9 +25,10 @@
         end,
         Fn(Fn, 500)
     end)()).
-            
-all() -> [boot_up, track_files, track_many_dirs].
-groups() -> [].
+
+all() -> [boot_up, track_files, track_many_dirs, {group, sync}].
+groups() -> [{sync, [],
+              [sync_01]}].
 
 %%%%%%%%%%%%%%%%%%%%%%
 %%% SETUP/TEARDOWN %%%
@@ -55,7 +56,7 @@ end_per_testcase(_Name, Config) ->
     ok = application:unload(dirmon),
     Config.
 
-init_dirs(Data, Root, Test) ->
+init_dirs(_Data, Root, Test) ->
     Paths = [Db = filename:join([Root, Test, "db/"]),
              Img1=filename:join([Root, Test, "img1/"]),
              Img2=filename:join([Root, Test, "img2/"]),
@@ -64,13 +65,6 @@ init_dirs(Data, Root, Test) ->
     ok = filelib:ensure_dir(filename:join([Img1, ".ensured"])),
     ok = filelib:ensure_dir(filename:join([Img2, ".ensured"])),
     ok = filelib:ensure_dir(filename:join([Img3, ".ensured"])),
-    {ok, Names} = file:list_dir(Data),
-    [file:copy(filename:join([Data,Name]),
-               filename:join([Img1, Name])) || Name <- Names],
-    [file:copy(filename:join([Data,Name]),
-               filename:join([Img2, Name])) || Name <- Names],
-    [file:copy(filename:join([Data,Name]),
-               filename:join([Img3, Name])) || Name <- Names],
     Paths.
 
 %%%%%%%%%%%%%
@@ -98,10 +92,17 @@ boot_up(Config) ->
 %% scan a directory, wait a bit, see that the files are there
 %% in the DB
 track_files(Config) ->
+    %% Copy the data to the priv dir
     Dir = hd(?config(dirs, Config)),
-    Img1 = list_to_binary(filename:join(Dir, "1.gif")),
-    Img2 = list_to_binary(filename:join(Dir, "2.gif")),
-    Img3 = list_to_binary(filename:join(Dir, "3.gif")),
+    Data = ?config(data_dir, Config),
+    [file:copy(filename:join([Data,Img]), filename:join([Dir, Img]))
+        || Img <- ["1.gif","2.gif","3.gif"]],
+    AbsImg1 = list_to_binary(filename:join(Dir, "1.gif")),
+    AbsImg2 = list_to_binary(filename:join(Dir, "2.gif")),
+    AbsImg3 = list_to_binary(filename:join(Dir, "3.gif")),
+    Img1 = <<"1.gif">>,
+    Img2 = <<"2.gif">>,
+    Img3 = <<"3.gif">>,
     tracked = dirmon:track("some_name", Dir),
     %% See that the files are tracked
     ?until_ok(_, peeranha:read("some_name", Img1)),
@@ -111,10 +112,11 @@ track_files(Config) ->
     ?until_error(undefined,
                  peeranha:read("some_name", list_to_binary(filename:join(Dir, "ignore.part")))),
     %% Move a file (copy -> delete) and see that it worked
-    {ok, _} = file:copy(Img1, Img2),
-    ok = file:delete(Img1),
+    {ok, _} = file:copy(AbsImg1, AbsImg2),
+    ok = file:delete(AbsImg1),
     ?until_error(undefined, peeranha:read("some_name", Img1)),
     ?until_ok(Hash2, peeranha:read("some_name", Img2)),
+    ct:pal("Hash1: ~p, Hash2: ~p", [Hash1,Hash2]),
     ?assertNotEqual(Hash1, Hash2).
 
 %% scan a directory, wait a bit, see that the files are there
@@ -122,12 +124,21 @@ track_files(Config) ->
 %% no conflict.
 track_many_dirs(Config) ->
     [Dir1,Dir2|_] = ?config(dirs, Config),
-    Img1 = list_to_binary(filename:join(Dir1, "1.gif")),
-    Img2 = list_to_binary(filename:join(Dir1, "2.gif")),
-    Img3 = list_to_binary(filename:join(Dir1, "3.gif")),
-    ImgA = list_to_binary(filename:join(Dir2, "A.gif")),
-    ImgB = list_to_binary(filename:join(Dir2, "B.gif")),
-    ImgC = list_to_binary(filename:join(Dir2, "C.gif")),
+    Data = ?config(data_dir, Config),
+    [file:copy(filename:join([Data,Img]), filename:join([Dir1, Img]))
+        || Img <- ["1.gif","2.gif","3.gif"]],
+    AbsImg1 = list_to_binary(filename:join(Dir1, "1.gif")),
+    AbsImg2 = list_to_binary(filename:join(Dir1, "2.gif")),
+    AbsImg3 = list_to_binary(filename:join(Dir1, "3.gif")),
+    AbsImgA = list_to_binary(filename:join(Dir2, "A.gif")),
+    AbsImgB = list_to_binary(filename:join(Dir2, "B.gif")),
+    AbsImgC = list_to_binary(filename:join(Dir2, "C.gif")),
+    Img1 = <<"1.gif">>,
+    Img2 = <<"2.gif">>,
+    Img3 = <<"3.gif">>,
+    ImgA = <<"A.gif">>,
+    ImgB = <<"B.gif">>,
+    ImgC = <<"C.gif">>,
     tracked = dirmon:track("some_name", Dir1),
     %% See that the files are tracked
     ?until_ok(H1, peeranha:read("some_name", Img1)),
@@ -135,9 +146,9 @@ track_many_dirs(Config) ->
     ?until_ok(H3, peeranha:read("some_name", Img3)),
     %% Second dir
     tracked = dirmon:track("other_name", Dir2),
-    {ok,_} = file:copy(Img1,ImgC),
-    {ok,_} = file:copy(Img2,ImgB),
-    {ok,_} = file:copy(Img3,ImgA),
+    {ok,_} = file:copy(AbsImg1,AbsImgC),
+    {ok,_} = file:copy(AbsImg2,AbsImgB),
+    {ok,_} = file:copy(AbsImg3,AbsImgA),
     ?until_ok(H3, peeranha:read("other_name", ImgA)),
     ?until_ok(H2, peeranha:read("other_name", ImgB)),
     ?until_ok(H1, peeranha:read("other_name", ImgC)),
@@ -205,6 +216,24 @@ track_many_dirs(Config) ->
 %% |    | Pull 2 -> 3 | A3          | A3          | (A1,A2,A3).c|
 %% |    |             | A3          | A3          | A3          |
 %% +----+-------------+-------------+-------------+-------------+
+%% TODO: Nested directories syncing test
+
+sync_01(Config) ->
+    [Dir1, Dir2 | _] = ?config(dirs, Config),
+    Data = ?config(data_dir, Config),
+    Bindings = [{a, <<"1.gif">>, contents(filename:join(Data, "1.gif"))},
+                {b, <<"2.gif">>, contents(filename:join(Data, "2.gif"))},
+                {c, <<"3.gif">>, contents(filename:join(Data, "3.gif"))}],
+    init(Dir1, Bindings),
+    init(Dir2, []), % noop
+    track(dir1, Dir1),
+    track(dir2, Dir2),
+    peek(dir1, Dir1, [a,b,c], Bindings),
+    peek(dir2, Dir2, [], Bindings),
+    dirmon:pull(dir2, {node(), dir1}), % pull from dir1 into dir2
+    peek(dir1, Dir1, [a,b,c], Bindings),
+    peek(dir1, Dir2, [a,b,c], Bindings).
+
 
 %% Possible cases, with failures/interrupts during syncs:
 %%  TODO
@@ -223,3 +252,37 @@ track_many_dirs(Config) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%
 %%% PRIVATE / HELPERS %%%
 %%%%%%%%%%%%%%%%%%%%%%%%%
+contents(FileName) ->
+    {ok, Bin} = file:read_file(FileName),
+    Bin.
+
+init(_Dest, []) -> ok;
+init(Dest, [{_Var, Name, Content} | Tail]) ->
+    file:write_file(filename:join(Dest, Name), Content),
+    init(Dest, Tail).
+
+track(Name, Path) ->
+    dirmon:track(Name, Path).
+
+peek(Name, Base, List, Bindings) ->
+    %% Check the count is right
+    {ok, Listed} = file:list_dir(Base),
+    ?assertEqual(length(List), length(Listed)),
+    %% check that all files are the right ones
+    peek_each(Name, Base, List, Bindings).
+
+peek_each(_Name, _Base, [], _Bindings) -> ok;
+peek_each(Name, Base, [Var|Vars], Bindings) ->
+    {Var, BaseName, Content} = lists:keyfind(Var, 1, Bindings),
+    Path = iolist_to_binary(filename:join(Base, BaseName)),
+    ?until_ok(_, peeranha:read(Name, BaseName)),
+    {ok, Content} = file:read_file(Path),
+    peek_each(Name, Base, Vars, Bindings).
+
+
+file(Base, Atom) -> filename:join([Base, atom_to_file(Atom)]).
+
+atom_to_file(a) -> "1.gif";
+atom_to_file(b) -> "2.gif";
+atom_to_file(c) -> "3.gif".
+
