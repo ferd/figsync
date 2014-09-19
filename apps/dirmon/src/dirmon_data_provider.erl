@@ -53,7 +53,7 @@ init([]) ->
 handle_call({read_abs_dir, DbName}, _From, S=#state{dirs=Map}) ->
     case maps:find(DbName, Map) of
         error -> {reply, {error, undefined}, S};
-        {ok, Path} -> {reply, {ok, Path}, S}
+        {ok, Path} -> {reply, {ok, Path}, S}
     end;
 handle_call({write_abs_dir, DbName, Path}, _From, S=#state{dirs=Map}) ->
     {reply, ok, S#state{dirs=maps:put(DbName, Path, Map)}};

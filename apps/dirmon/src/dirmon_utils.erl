@@ -67,7 +67,7 @@ stream_file(To, Ref, F, Offset) ->
         eof ->
             file:close(F),
             To ! {Ref, eof};
-        {ok, Bytes} ->
+        {ok, Bytes} ->
             To ! {Ref, Offset, Bytes},
             stream_file(To, Ref, F, Offset+?BATCH)
     end.

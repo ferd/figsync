@@ -266,7 +266,7 @@ track(Name, Path) ->
 
 peek(Name, Base, List, Bindings) ->
     %% Check the count is right
-    {ok, Listed} = file:list_dir(Base),
+    {ok, Listed} = file:list_dir(Base),
     ?assertEqual(length(List), length(Listed)),
     %% check that all files are the right ones
     peek_each(Name, Base, List, Bindings).
