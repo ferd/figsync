@@ -46,6 +46,10 @@ pre_pull(peer, Key, _LocalVal, PeerVal,
         accepted -> % Rework to skip on failure
             ok = dirmon_utils:copy_remote_to_local(Node, AbsRemote, Tmp)
     end;
+pre_pull(local, _Key, undefined, _PeerVal,
+         _Remote, _TmpDir, _LocalDir, _RemoteDir) ->
+    %% Was deleted, stays deleted
+    ok;
 pre_pull(local, Key, _LocalVal, _PeerVal,
          _Remote, TmpDir, LocalDir, _RemoteDir) ->
     %% Copy everything around to be sure. We can remove this later as
