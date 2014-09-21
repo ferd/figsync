@@ -32,7 +32,7 @@ pull(Local, Remote={Node,DbName}) when is_atom(Node) ->
 
         % peer|local|conflict
 %pre_pull(Winner, Key, LocalVal, PeerVal, {Node, Name})
-pre_pull(peer, Key, _LocalVal, _PeerVal,
+pre_pull(peer, Key, _LocalVal, PeerVal,
          {Node, _Name}, TmpDir, _LocalDir, RemoteDir) ->
     %% This bit is non-portable, please fix
     Tmp = filename:join([TmpDir, Key]),
@@ -41,6 +41,8 @@ pre_pull(peer, Key, _LocalVal, _PeerVal,
     case dirmon_utils:check_extension(Key) of
         ignored ->
             skip;
+        accepted when PeerVal =:= undefined -> % deleted!
+            ok;
         accepted -> % Rework to skip on failure
             ok = dirmon_utils:copy_remote_to_local(Node, AbsRemote, Tmp)
     end;
@@ -56,8 +58,12 @@ pre_pull(conflict, _Key, _LocalVal, _PeerVal,
          {_Node, _Name}, _TmpDir, _LocalDir, _RemoteDir) ->
     error(todo).
 
+post_pull(Key, undefined, _Tmp, Local) ->
+    %% undefined value = deletion
+    file:delete(filename:join([Local, Key]));
 post_pull(Key, _Val, Tmp, Local) ->
-   %% naive wrong impl to make a few tests pass. To be refined.
-   file:copy(filename:join([Tmp, Key]),
-             filename:join([Local, Key])).
+    %% naive wrong impl to make a few tests pass. To be refined.
+    file:copy(filename:join([Tmp, Key]),
+             filename:join([Local, Key])),
+    file:delete(filename:join([Tmp,Key])).
 
