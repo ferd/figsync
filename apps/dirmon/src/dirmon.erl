@@ -57,7 +57,8 @@ pre_pull(local, Key, _LocalVal, _PeerVal,
     Tmp = filename:join([TmpDir, Key]),
     ok = filelib:ensure_dir(Tmp),
     AbsLocal = filename:join(LocalDir, Key),
-    file:copy(AbsLocal, Tmp);
+    {ok, _} = file:copy(AbsLocal, Tmp),
+    ok;
 pre_pull(conflict, _Key, _LocalVal, _PeerVal,
          {_Node, _Name}, _TmpDir, _LocalDir, _RemoteDir) ->
     error(todo).

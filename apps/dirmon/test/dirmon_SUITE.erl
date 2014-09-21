@@ -29,7 +29,7 @@
 %% RUN TESTS RUN
 all() -> [boot_up, track_files, track_many_dirs, {group, sync}].
 groups() -> [{sync, [],
-              [sync_01, sync_02, sync_03, sync_04]}].
+              [sync_01, sync_02, sync_03, sync_04, sync_05, sync_06]}].
 
 %%%%%%%%%%%%%%%%%%%%%%
 %%% SETUP/TEARDOWN %%%
@@ -193,7 +193,6 @@ track_many_dirs(Config) ->
 %% |    | Move 1.A=>B | A           | A           | Ø           |
 %% |    | Pull 2 -> 3 | B           | A           | Ø           |
 %% |    | Pull 1 -> 3 | B           | A           | A           |
-%% |    | Pull 1 -> 2 | B           | A           | B           |
 %% |    | Move 2.A=>B | B           | A           | B           |
 %% |    | Pull 1 -> 2 | B           | B           | B           |
 %% |    |             | B           | B           | B           |
@@ -322,6 +321,75 @@ sync_04(Config) ->
     peek(dir3, Dir3, [], Bindings),
     ok.
 
+sync_05(Config) ->
+    [Dir1, Dir2, Dir3 | _] = ?config(dirs, Config),
+    Data = ?config(data_dir, Config),
+    Bindings = [{a, <<"1.gif">>, contents(filename:join(Data, "1.gif"))},
+                {b, <<"2.gif">>, contents(filename:join(Data, "1.gif"))}],
+    init(Dir1, []), 
+    init(Dir2, []),
+    init(Dir3, []),
+    track(dir1, Dir1),
+    track(dir2, Dir2),
+    track(dir3, Dir3),
+    peek(dir1, Dir1, [], Bindings),
+    peek(dir2, Dir2, [], Bindings),
+    peek(dir3, Dir3, [], Bindings),
+    add(Dir1, a, Bindings),
+    peek(dir1, Dir1, [a], Bindings),
+    peek(dir2, Dir2, [], Bindings),
+    peek(dir3, Dir3, [], Bindings),
+    dirmon:pull(dir2, {node(), dir1}), % pull from dir1 into dir2
+    peek(dir1, Dir1, [a], Bindings),
+    peek(dir2, Dir2, [a], Bindings),
+    peek(dir3, Dir3, [], Bindings),
+    move(Dir1, a, b, Bindings),
+    peek(dir1, Dir1, [b], Bindings),
+    peek(dir2, Dir2, [a], Bindings),
+    peek(dir3, Dir3, [], Bindings),
+    dirmon:pull(dir3, {node(), dir2}), % pull from dir2 into dir3
+    peek(dir1, Dir1, [b], Bindings),
+    peek(dir2, Dir2, [a], Bindings),
+    peek(dir3, Dir3, [a], Bindings),
+    dirmon:pull(dir3, {node(), dir1}), % pull from dir1 into dir3
+    peek(dir1, Dir1, [b], Bindings),
+    peek(dir2, Dir2, [a], Bindings),
+    peek(dir3, Dir3, [b], Bindings),
+    move(Dir2, a, b, Bindings),
+    peek(dir1, Dir1, [b], Bindings),
+    peek(dir2, Dir2, [b], Bindings),
+    peek(dir3, Dir3, [b], Bindings),
+    dirmon:pull(dir2, {node(), dir1}), % pull from dir1 into dir2
+    peek(dir1, Dir1, [b], Bindings),
+    peek(dir2, Dir2, [b], Bindings),
+    peek(dir3, Dir3, [b], Bindings),
+    ok.
+
+sync_06(Config) ->
+    [Dir1, Dir2 | _] = ?config(dirs, Config),
+    Data = ?config(data_dir, Config),
+    Bindings = [A1={a1, <<"1.gif">>, contents(filename:join(Data, "1.gif"))},
+                B1={b1, <<"2.gif">>, contents(filename:join(Data, "2.gif"))},
+                 _={b2, <<"2.gif">>, contents(filename:join(Data, "1.gif"))}],
+    init(Dir1, [A1,B1]), 
+    init(Dir2, [A1,B1]),
+    track(dir1, Dir1),
+    track(dir2, Dir2),
+    peek(dir1, Dir1, [a1,b1], Bindings),
+    peek(dir2, Dir2, [a1,b1], Bindings),
+    move(Dir1, a1, b2, Bindings),
+    peek(dir1, Dir1, [b2], Bindings),
+    peek(dir2, Dir2, [a1,b1], Bindings),
+    dirmon:pull(dir1, {node(), dir2}), % pull from dir2 into dir1
+    peek(dir1, Dir1, [b2], Bindings),
+    peek(dir2, Dir2, [a1,b1], Bindings),
+    dirmon:pull(dir2, {node(), dir1}), % pull from dir1 into dir2
+    peek(dir1, Dir1, [b2], Bindings),
+    peek(dir2, Dir2, [b2], Bindings),
+    ok.
+    
+
+
 %% Possible cases, with failures/interrupts during syncs:
 %%  TODO
 %%
@@ -359,12 +427,19 @@ peek(Name, Base, List, Bindings) ->
     ?assertEqual(length(List), length(Listed)).
 
 peek_each(_Name, _Base, [], []) -> ok;
-peek_each(Name, Base, Vars=[], [{_Var, BaseName, _Content} | Bindings]) ->
+peek_each(Name, Base, Vars=[], [{_Var, BaseName, Content} | Bindings]) ->
     %% Test for the absence of a value
     ct:pal("testing abs of ~p",[BaseName]),
     Path = iolist_to_binary(filename:join(Base, BaseName)),
-    ?until_error(undefined, peeranha:read(Name, BaseName)),
-    {error, enoent} = file:read_file(Path),
+    try
+        ?until_error(undefined, peeranha:read(Name, BaseName)),
+        {error, enoent} = file:read_file(Path)
+    catch
+        error:timeout -> % Maybe it exists from a move and the content differs
+            ?until_ok(_, peeranha:read(Name, BaseName)),
+            {ok, Bin} = file:read_file(Path),
+            ?assertNotEqual(Content, Bin)
+    end,
     peek_each(Name, Base, Vars, Bindings);
 peek_each(Name, Base, [Var|Vars], Bindings) ->
     %% Test for the presence of a value
@@ -378,6 +453,19 @@ delete(Base, Var, Bindings) ->
     {Var, BaseName, _Content} = lists:keyfind(Var, 1, Bindings),
     Path = iolist_to_binary(filename:join(Base, BaseName)),
     file:delete(Path).
+
+add(Base, Var, Bindings) ->
+    {Var, BaseName, Content} = lists:keyfind(Var, 1, Bindings),
+    Path = iolist_to_binary(filename:join(Base, BaseName)),
+    file:write_file(Path, Content).
+
+move(Base, VarFrom, VarTo, Bindings) ->
+    %% Planned content has to be the same to make the move legal. Then we
+    %% just delete the old file and create the new one.
+    {VarFrom, _BaseName, Content} = lists:keyfind(VarFrom, 1, Bindings),
+    {VarTo, _NewName, Content} = lists:keyfind(VarTo, 1, Bindings),
+    delete(Base, VarFrom, Bindings),
+    add(Base, VarTo, Bindings).
 
 file(Base, Atom) -> filename:join([Base, atom_to_file(Atom)]).
 
