@@ -133,17 +133,28 @@ handle_info({file_monitor, Ref, {changed, AbsPath, file, _FileInfo, []}},
             S=#state{ref=Ref, db=Db, dir=Dir}) ->
     %% Updated file
     Path = make_relative(Dir, AbsPath),
-    update(Db, Dir, Path),
-    error_logger:info_msg("Detected file update ~s", [Path]),
+    case dirmon_utils:check_extension(Path) of
+        accepted ->
+            update(Db, Dir, Path),
+            error_logger:info_msg("Detected file update ~s", [Path]);
+        _ ->
+            ignored
+    end,
     {noreply, S};
 handle_info({file_monitor, Ref, {error, AbsPath, file, enoent}},
             S=#state{ref=Ref, db=Db, dir=Dir}) ->
     %% Deleted file
     %% the syncer cannot delete a file in a delete conflict, it must leave
     %% it as is.
+    %% Was the file tracked or trackable?
     Path = make_relative(Dir, AbsPath),
-    delete(Db, Path),
-    error_logger:info_msg("Stopped tracking file ~s", [Path]),
+    case peeranha:read(Db, Path) of
+        {error, undefined} ->
+            not_concerned;
+        _ ->
+            delete(Db, Path),
+            error_logger:info_msg("Stopped tracking file ~s", [Path])
+    end,
     {noreply, S};
 handle_info(Info, State) ->
     error_logger:warning_msg("mod=~p at=handle_info warning=unexpected_event "
@@ -159,11 +170,14 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
-init_db(Name, UUID, Dir, Type, ToMonitor) ->
-    %% TODO: handle non-initialized DB that needs to be fetched
-    %% from a peer (type normal)
-    ok = peeranha:boot(Name, [{type, Type}, {dir, Dir}, {uuid, UUID}]),
-    dirmon_utils:add_db({Name, UUID, ToMonitor, Type}).
+init_db(Name, UUID, Dir, root, ToMonitor) ->
+    ok = peeranha:boot(Name, [{type, root}, {dir, Dir}, {uuid, UUID}]),
+    dirmon_utils:add_db({Name, UUID, ToMonitor, root});
+init_db(Name, _UUID, Dir, Remote, ToMonitor) ->
+    ok = peeranha:fork(Remote, Name, Dir),
+    %% Peeranha should expose the UUID from a node. TODO!!
+    {UUID, _} = interclock:identity(Name),
+    dirmon_utils:add_db({Name, UUID, ToMonitor, normal}).
 
 maybe_add(Db, Dir, Path) ->
     case dirmon_utils:check_extension(Path) == accepted
@@ -195,11 +209,8 @@ update(Db, Dir, Path) ->
                 true -> ok;
                 false -> peeranha:write(Db, Path, Hash)
             end;
-        {conflict, Values} ->
-            case lists:member(Hash, Values) of
-                true -> ok;
-                false -> peeranha:write(Db, Path, Hash)
-            end
+        {conflict, _Values} ->
+            peeranha:write(Db, Path, Hash)
     end.
 
 delete(Db, Path) ->

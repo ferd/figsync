@@ -15,6 +15,16 @@
         end,
         Fn(Fn, 500)
     end)()).
+-define(until_conflict(Var, Action),
+    Var = (fun() ->
+        Fn=fun(_, 0) -> error(timeout)
+           ;  (F, T) -> case Action of
+                            {conflict, X} -> X;
+                            _ -> timer:sleep(10), F(F, T-10)
+                        end
+        end,
+        Fn(Fn, 500)
+    end)()).
 -define(until_error(Var, Action),
     Var = (fun() ->
         Fn=fun(_, 0) -> error(timeout)
@@ -25,11 +35,22 @@
         end,
         Fn(Fn, 500)
     end)()).
+-define(until_not_error(Var, Action),
+    Var = (fun() ->
+        Fn=fun(_, 0) -> error(timeout)
+           ;  (F, T) -> case Action of
+                            {error, _} -> timer:sleep(10), F(F, T-10);
+                            X -> X
+                        end
+        end,
+        Fn(Fn, 500)
+    end)()).
 
 %% RUN TESTS RUN
 all() -> [boot_up, track_files, track_many_dirs, {group, sync}].
 groups() -> [{sync, [],
-              [sync_01, sync_02, sync_03, sync_04, sync_05, sync_06]}].
+              [sync_01, sync_02, sync_03, sync_04, sync_05, sync_06,
+               sync_07]}].
 
 %%%%%%%%%%%%%%%%%%%%%%
 %%% SETUP/TEARDOWN %%%
@@ -208,14 +229,38 @@ track_many_dirs(Config) ->
 %% |    | Add 3.A3    | A1.c,A2.c   | A2          | Ø           |
 %% |    | Pull 3 -> 1 | A1.c,A2.c   | A2          | A3          |
 %% |    | Pull 1 -> 3 | (A1,A2,A3).c| A2          | A3          |
-%% |    | Del 1.A2    | (A1,A2,A3).c| A2          | (A1,A2,A3).c|
-%% |    | Pull 3 -> 1 | (A1,A3).c   | A2          | (A1,A2,A3).c|
-%% |    | Del 1.A2    | (A1,A2,A3).c| A2          | (A1,A2,A3).c| * conflict wasn't resolved, gets recreated
-%% |    | Del 1.A1    | (A1,A3).c   | A2          | (A1,A2,A3).c|
+%% |    | Del 1.A2    | (A1,A2,A3).c| A2          | (A1,A2,A3).c| 
+%% |    | Pull 3 -> 1 | (A1,A3).c   | A2          | (A1,A2,A3).c| // partial conflict resolution -- we won't see the diff
+%% |    | Del 1.A1    | (A1,A3).c   | A2          | (A1,A2,A3).c| %% make a case of syncing with files missing
+%% |    | Move A3c=>A3| A3.c        | A2          | (A1,A2,A3).c|
 %% |    | Pull 1 -> 2 | A3          | A2          | (A1,A2,A3).c|
 %% |    | Pull 2 -> 3 | A3          | A3          | (A1,A2,A3).c|
 %% |    |             | A3          | A3          | A3          |
 %% +----+-------------+-------------+-------------+-------------+
+%% | 08 | Add 1.A     | Ø           | Ø           | N/A         |
+%% |    | Add 2.A     | A           | A           | N/A         |
+%% |    | Pull 1 -> 2 | A           | A           | N/A         |
+%% |    | Pull 2 -> 1 | A           | A           | N/A         | * no conflict
+%% |    |             | A           | A           | N/A         | * no conflict
+%% +----+-------------+-------------+-------------+-------------+
+%% | 09 | Add 1.A1    | Ø           | Ø           | Ø           |
+%% |    | Add 2.A2    | A1          | Ø           | Ø           |
+%% |    | Pull 2 -> 1 | A1          | A2          | Ø           |
+%% |    | Add 3.A3    | A1.c,A2.c   | A2          | Ø           |
+%% |    | Pull 3 -> 1 | A1.c,A2.c   | A2          | A3          |
+%% |    | Del 1.A2    | (A1,A2,A3).c| A2          | (A1,A2,A3).c| 
+%% |    | Pull 3 -> 1 | (A1,A3).c   | A2          | (A1,A2,A3).c| // partial conflict resolution -- we won't see the diff
+%% |    | Del 1.A1    | (A1,A3).c   | A2          | (A1,A2,A3).c| %% make a case of syncing with files missing
+%% |    | Pull 1 -> 3 | A3.c        | A2          | (A1,A2,A3).c|
+%% |    | Del 3.A1    | A3.c        | A2          | (A1,A2,A3).c|
+%% |    | Del 3.A3    | A3.c        | A2          | (A2,A3).c   |
+%% |    | Del 3.A3    | A3.c        | A2          | A2.c        |
+%% |    | Move A2c=>A2| A3.c        | A2          | A2.c        |
+%% |    | Pull 3 -> 1 | A3.c        | A2          | A2          |
+%% |    | Pull 3 -> 2 | A2          | A2          | A2          |
+%% |    |             | A2          | A2          | A2          |
+%% +----+-------------+-------------+-------------+-------------+
+%%
 %% TODO: Nested directories syncing test
 
 sync_01(Config) ->
@@ -227,7 +272,7 @@ sync_01(Config) ->
     init(Dir1, Bindings),
     init(Dir2, []), % noop
     track(dir1, Dir1),
-    track(dir2, Dir2),
+    track(dir2, Dir2, dir1),
     peek(dir1, Dir1, [a,b,c], Bindings),
     peek(dir2, Dir2, [], Bindings),
     dirmon:pull(dir2, {node(), dir1}), % pull from dir1 into dir2
@@ -243,7 +288,7 @@ sync_02(Config) ->
     init(Dir1, [A,C]), 
     init(Dir2, [B]),
     track(dir1, Dir1),
-    track(dir2, Dir2),
+    track(dir2, Dir2, dir1),
     peek(dir1, Dir1, [a,c], Bindings),
     peek(dir2, Dir2, [b], Bindings),
     dirmon:pull(dir2, {node(), dir1}), % pull from dir1 into dir2
@@ -256,18 +301,29 @@ sync_02(Config) ->
 sync_03(Config) ->
     [Dir1, Dir2, Dir3 | _] = ?config(dirs, Config),
     Data = ?config(data_dir, Config),
-    Bindings = [_={a, <<"1.gif">>, contents(filename:join(Data, "1.gif"))},
-                B={b, <<"2.gif">>, contents(filename:join(Data, "2.gif"))},
-                _={c, <<"3.gif">>, contents(filename:join(Data, "3.gif"))}],
-    init(Dir1, Bindings), 
-    init(Dir2, Bindings),
-    init(Dir3, [B]),
+    Bindings = [{a, <<"1.gif">>, contents(filename:join(Data, "1.gif"))},
+                {b, <<"2.gif">>, contents(filename:join(Data, "2.gif"))},
+                {c, <<"3.gif">>, contents(filename:join(Data, "3.gif"))}],
+    %% Need a more complex setup since the spec mentions existing shared
+    %% files.
+    init(Dir1, []),
+    init(Dir2, []),
+    init(Dir3, []),
     track(dir1, Dir1),
-    track(dir2, Dir2),
-    track(dir3, Dir3),
+    track(dir2, Dir2, dir1),
+    track(dir3, Dir3, dir2),
+    add(Dir1, b, Bindings),
+    peek(dir1, Dir1, [b], Bindings), % sync
+    dirmon:pull(dir3, {node(), dir1}),
+    add(Dir1, a, Bindings),
+    add(Dir1, c, Bindings),
+    peek(dir1, Dir1, [a,b,c], Bindings), % sync
+    dirmon:pull(dir2, {node(), dir1}),
+    %% SETUP OVER
     peek(dir1, Dir1, [a,b,c], Bindings),
     peek(dir2, Dir2, [a,b,c], Bindings),
     peek(dir3, Dir3, [b], Bindings),
+    timer:sleep(500), % shit fix for race condition on file watches
     delete(Dir1, b, Bindings), % delete 1.b
     peek(dir1, Dir1, [a,c], Bindings),
     peek(dir2, Dir2, [a,b,c], Bindings),
@@ -281,7 +337,7 @@ sync_03(Config) ->
     peek(dir2, Dir2, [a,c], Bindings),
     peek(dir3, Dir3, [a,c], Bindings),
     ok.
-    
+
 sync_04(Config) ->
     [Dir1, Dir2, Dir3 | _] = ?config(dirs, Config),
     Data = ?config(data_dir, Config),
@@ -289,14 +345,25 @@ sync_04(Config) ->
                 {b, <<"2.gif">>, contents(filename:join(Data, "2.gif"))},
                 {c, <<"3.gif">>, contents(filename:join(Data, "3.gif"))}],
     init(Dir1, Bindings), 
-    init(Dir2, Bindings),
-    init(Dir3, Bindings),
+    init(Dir2, []),
+    init(Dir3, []),
     track(dir1, Dir1),
-    track(dir2, Dir2),
-    track(dir3, Dir3),
+    track(dir2, Dir2, dir1),
+    track(dir3, Dir3, dir1),
+    peek(dir1, Dir1, [a,b,c], Bindings),
+    peek(dir2, Dir2, [], Bindings),
+    peek(dir3, Dir3, [], Bindings),
+    dirmon:pull(dir2, {node(), dir1}),
+    dirmon:pull(dir3, {node(), dir1}),
     peek(dir1, Dir1, [a,b,c], Bindings),
     peek(dir2, Dir2, [a,b,c], Bindings),
     peek(dir3, Dir3, [a,b,c], Bindings),
+    %% Figure out error here where a race condition happens:
+    %% we didn't have the time for the file monitor to detect b in Dir2
+    %% before it swiftly got deleted (the sync test sees the data already due
+    %% to the merge working) but then later doesn't ever report the file
+    %% going away due to never seeing it appear first.
+    timer:sleep(500), % shit fix for file monitor race condition
     delete(Dir1, a, Bindings), % delete 1.a
     delete(Dir2, b, Bindings), % delete 2.b
     delete(Dir3, c, Bindings), % delete 3.c
@@ -330,8 +397,8 @@ sync_05(Config) ->
     init(Dir2, []),
     init(Dir3, []),
     track(dir1, Dir1),
-    track(dir2, Dir2),
-    track(dir3, Dir3),
+    track(dir2, Dir2, dir1),
+    track(dir3, Dir3, dir2),
     peek(dir1, Dir1, [], Bindings),
     peek(dir2, Dir2, [], Bindings),
     peek(dir3, Dir3, [], Bindings),
@@ -371,10 +438,12 @@ sync_06(Config) ->
     Bindings = [A1={a1, <<"1.gif">>, contents(filename:join(Data, "1.gif"))},
                 B1={b1, <<"2.gif">>, contents(filename:join(Data, "2.gif"))},
                  _={b2, <<"2.gif">>, contents(filename:join(Data, "1.gif"))}],
-    init(Dir1, [A1,B1]), 
-    init(Dir2, [A1,B1]),
+    init(Dir1, [A1,B1]),
+    init(Dir2, []),
     track(dir1, Dir1),
-    track(dir2, Dir2),
+    track(dir2, Dir2, dir1),
+    peek(dir1, Dir1, [a1,b1], Bindings),
+    dirmon:pull(dir2, {node(), dir1}), % pull from dir1 into dir2
     peek(dir1, Dir1, [a1,b1], Bindings),
     peek(dir2, Dir2, [a1,b1], Bindings),
     move(Dir1, a1, b2, Bindings),
@@ -387,12 +456,85 @@ sync_06(Config) ->
     peek(dir1, Dir1, [b2], Bindings),
     peek(dir2, Dir2, [b2], Bindings),
     ok.
-    
+
+sync_07(Config) ->
+    [Dir1, Dir2, Dir3 | _] = ?config(dirs, Config),
+    Data = ?config(data_dir, Config),
+    Content1 = contents(filename:join(Data, "1.gif")),
+    Content2 = contents(filename:join(Data, "2.gif")),
+    Content3 = contents(filename:join(Data, "3.gif")),
+    Bindings = [{a1, <<"1.gif">>, Content1},
+                {a2, <<"1.gif">>, Content2},
+                {a3, <<"1.gif">>, Content3},
+                {a1c, <<"1.gif.", (hash_data(Content1))/binary, ".conflict">>, Content1},
+                {a2c, <<"1.gif.", (hash_data(Content2))/binary, ".conflict">>, Content2},
+                {a3c, <<"1.gif.", (hash_data(Content3))/binary, ".conflict">>, Content3}],
+    init(Dir1, []),
+    init(Dir2, []),
+    init(Dir3, []),
+    track(dir1, Dir1),
+    track(dir2, Dir2, dir1),
+    track(dir3, Dir3, dir2),
+    peek(dir1, Dir1, [], Bindings),
+    peek(dir2, Dir2, [], Bindings),
+    peek(dir3, Dir3, [], Bindings),
+    add(Dir1, a1, Bindings),
+    add(Dir2, a2, Bindings),
+    peek(dir1, Dir1, [a1], Bindings),
+    peek(dir2, Dir2, [a2], Bindings),
+    peek(dir3, Dir3, [], Bindings),
+    dirmon:pull(dir1, {node(), dir2}), % pull from dir2 into dir1
+    peek(dir1, Dir1, [a1c,a2c], Bindings),
+    peek(dir2, Dir2, [a2], Bindings),
+    peek(dir3, Dir3, [], Bindings),
+    add(Dir3, a3, Bindings),
+    peek(dir1, Dir1, [a1c,a2c], Bindings),
+    peek(dir2, Dir2, [a2], Bindings),
+    peek(dir3, Dir3, [a3], Bindings),
+    dirmon:pull(dir1, {node(), dir3}), % pull from dir3 into dir1
+    peek(dir1, Dir1, [a1c,a2c,a3c], Bindings),
+    peek(dir2, Dir2, [a2], Bindings),
+    peek(dir3, Dir3, [a3], Bindings),
+    dirmon:pull(dir3, {node(), dir1}), % pull from dir1 into dir3
+    peek(dir1, Dir1, [a1c,a2c,a3c], Bindings),
+    peek(dir2, Dir2, [a2], Bindings),
+    peek(dir3, Dir3, [a1c,a2c,a3c], Bindings),
+    timer:sleep(500), % shit fix for file monitor race condition
+    delete(Dir1, a2c, Bindings),
+    peek(dir1, Dir1, [a1c,a3c], Bindings),
+    peek(dir2, Dir2, [a2], Bindings),
+    peek(dir3, Dir3, [a1c,a2c,a3c], Bindings),
+    dirmon:pull(dir1, {node(), dir3}), % pull from dir3 into dir1
+    peek(dir1, Dir1, [a1c,a3c], Bindings),
+    peek(dir2, Dir2, [a2], Bindings),
+    peek(dir3, Dir3, [a1c,a2c,a3c], Bindings),
+    timer:sleep(500), % shit fix for file monitor race condition
+    delete(Dir1, a1c, Bindings),
+    peek(dir1, Dir1, [a3c], Bindings),
+    peek(dir2, Dir2, [a2], Bindings),
+    peek(dir3, Dir3, [a1c,a2c,a3c], Bindings),
+    timer:sleep(500), % shit fix for file monitor race condition
+    move(Dir1, a3c, a3, Bindings),
+    peek(dir1, Dir1, [a3], Bindings),
+    peek(dir2, Dir2, [a2], Bindings),
+    peek(dir3, Dir3, [a1c,a2c,a3c], Bindings),
+    dirmon:pull(dir2, {node(), dir1}), % pull from dir1 into dir2
+    peek(dir1, Dir1, [a3], Bindings),
+    peek(dir2, Dir2, [a3], Bindings),
+    peek(dir3, Dir3, [a1c,a2c,a3c], Bindings),
+    dirmon:pull(dir3, {node(), dir2}), % pull from dir2 into dir3
+    peek(dir1, Dir1, [a3], Bindings),
+    peek(dir2, Dir2, [a3], Bindings),
+    peek(dir3, Dir3, [a3], Bindings),
+    hooray.
+
+
+
 
 
 %% Possible cases, with failures/interrupts during syncs:
 %%  TODO
-%%
+%% - find deletions on restart?
 
 %% Notes:
 %% File monitor needs to monitor a directory, and then all the files in it
@@ -419,34 +561,60 @@ init(Dest, [{_Var, Name, Content} | Tail]) ->
 track(Name, Path) ->
     dirmon:track(Name, Path).
 
+track(Name, Path, From) ->
+    dirmon:track_remote(Name, Path, {node(), From}).
+
 peek(Name, Base, List, Bindings) ->
     %% check that all files are the right ones
-    peek_each(Name, Base, List, Bindings),
-    %% Check the count is right
-    {ok, Listed} = file:list_dir(Base),
-    ?assertEqual(length(List), length(Listed)).
+    peek_each(Name, Base, List, Bindings).
+    %% Check that all files match the bindings
+    %{ok, Listed} = file:list_dir(Base),
+    %?assert(lists:all(fun(Path) -> 
 
 peek_each(_Name, _Base, [], []) -> ok;
 peek_each(Name, Base, Vars=[], [{_Var, BaseName, Content} | Bindings]) ->
     %% Test for the absence of a value
-    ct:pal("testing abs of ~p",[BaseName]),
+    ct:pal("testing abs of ~p",[_Var]),
     Path = iolist_to_binary(filename:join(Base, BaseName)),
     try
         ?until_error(undefined, peeranha:read(Name, BaseName)),
         {error, enoent} = file:read_file(Path)
     catch
         error:timeout -> % Maybe it exists from a move and the content differs
-            ?until_ok(_, peeranha:read(Name, BaseName)),
-            {ok, Bin} = file:read_file(Path),
-            ?assertNotEqual(Content, Bin)
+            try
+                ?until_ok(_, peeranha:read(Name, BaseName)),
+                {ok, Bin} = file:read_file(Path),
+                ?assertNotEqual(Content, Bin)
+            catch
+                error:timeout -> % Maybe it's a conflicting file!
+                    case filename:extension(Path) of
+                        <<".conflict">> ->
+                            %% we don't check for DB presence, more than one conflict
+                            %% may exist. We just look for absence of file on disk.
+                            {ok, BinConflict} = file:read_file(Path),
+                            ?assertNotEqual(Content, BinConflict);
+                        _ ->
+                            %% Conflicting original file
+                            ?until_conflict(_, peeranha:read(Name, BaseName))
+                    end
+            end
     end,
     peek_each(Name, Base, Vars, Bindings);
 peek_each(Name, Base, [Var|Vars], Bindings) ->
     %% Test for the presence of a value
+    ct:pal("testing pres of ~p",[Var]),
     {value, {Var, BaseName, Content}, NewBindings} = lists:keytake(Var, 1, Bindings),
     Path = iolist_to_binary(filename:join(Base, BaseName)),
-    ?until_ok(_, peeranha:read(Name, BaseName)),
-    {ok, Content} = file:read_file(Path),
+    case filename:extension(Path) of
+        <<".conflict">> ->
+            Origin = unconflict_name(BaseName),
+            ?until_conflict(_, peeranha:read(Name, Origin)), % we don't stop tracking
+            ct:pal("DIR: ~p",[file:list_dir(Base)]),
+            {ok, Content} = file:read_file(Path);
+        _ ->
+            ?until_ok(_, peeranha:read(Name, BaseName)),
+            {ok, Content} = file:read_file(Path)
+    end,
     peek_each(Name, Base, Vars, NewBindings).
 
 delete(Base, Var, Bindings) ->
@@ -473,3 +641,11 @@ atom_to_file(a) -> "1.gif";
 atom_to_file(b) -> "2.gif";
 atom_to_file(c) -> "3.gif".
 
+unconflict_name(BaseName) ->
+    OriginSize = byte_size(BaseName) - 50,
+    <<Origin:OriginSize/binary, _Dot, _Hash:40/binary, ".conflict">> = BaseName,
+    Origin.
+
+hash_data(Data) ->
+    Hash = crypto:hash(sha, Data),
+    iolist_to_binary([io_lib:format("~2.16.0B",[X]) || <<X:8>> <= Hash]).
