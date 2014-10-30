@@ -50,7 +50,7 @@
 all() -> [boot_up, track_files, track_many_dirs, {group, sync}].
 groups() -> [{sync, [],
               [sync_01, sync_02, sync_03, sync_04, sync_05, sync_06,
-               sync_07]}].
+               sync_07, sync_08, sync_09]}].
 
 %%%%%%%%%%%%%%%%%%%%%%
 %%% SETUP/TEARDOWN %%%
@@ -248,20 +248,27 @@ track_many_dirs(Config) ->
 %% |    | Pull 2 -> 1 | A1          | A2          | Ø           |
 %% |    | Add 3.A3    | A1.c,A2.c   | A2          | Ø           |
 %% |    | Pull 3 -> 1 | A1.c,A2.c   | A2          | A3          |
-%% |    | Del 1.A2    | (A1,A2,A3).c| A2          | (A1,A2,A3).c| 
-%% |    | Pull 3 -> 1 | (A1,A3).c   | A2          | (A1,A2,A3).c| // partial conflict resolution -- we won't see the diff
-%% |    | Del 1.A1    | (A1,A3).c   | A2          | (A1,A2,A3).c| %% make a case of syncing with files missing
-%% |    | Pull 1 -> 3 | A3.c        | A2          | (A1,A2,A3).c|
-%% |    | Del 3.A1    | A3.c        | A2          | (A1,A2,A3).c|
-%% |    | Del 3.A3    | A3.c        | A2          | (A2,A3).c   |
-%% |    | Del 3.A3    | A3.c        | A2          | A2.c        |
-%% |    | Move A2c=>A2| A3.c        | A2          | A2.c        |
-%% |    | Pull 3 -> 1 | A3.c        | A2          | A2          |
-%% |    | Pull 3 -> 2 | A2          | A2          | A2          |
+%% |    | Del 1.A1    | (A1,A2,A3).c| A2          | A3          | 
+%% |    | Pull 1 -> 3 | (A2,A3).c   | A2          | A3          |
+%% |    | Del 1.A3    | (A2,A3).c   | A2          | (A2,A3).c   | 
+%% |    | Del 3.A2    | A2.c        | A2          | (A2,A3).c   | 
+%% |    | Pull 3 -> 1 | A2.c        | A2          | A3.c        | 
+%% |    | Pull 1 -> 3 | A2.c        | A2          | A3.c        | % conflicted but sync'd on that fact
+%% |    | Move A2c=>A2| A2.c        | A2          | A3.c        | % conflicted but sync'd on that fact 
+%% |    | Pull 3 -> 1 | A2          | A2          | A3.c        |
+%% |    | Pull 1 -> 3 | A2          | A2          | A3.c        |
+%% |    | Pull 1 -> 2 | A2          | A2          | A2          |
 %% |    |             | A2          | A2          | A2          |
 %% +----+-------------+-------------+-------------+-------------+
 %%
 %% TODO: Nested directories syncing test
+%% TODO: Test deleting all conflict files without the original source
+%%       file
+%% TODO: Test overwriting the source file in a conflict group
+%%       and make sure overwriting a conflict file base flushes
+%%       the *.conflict files attached
+%% TODO: Test deleting the source file in a conflict group and make
+%%       sure this removed the *.conflict files attached
 
 sync_01(Config) ->
     [Dir1, Dir2 | _] = ?config(dirs, Config),
@@ -527,6 +534,115 @@ sync_07(Config) ->
     peek(dir2, Dir2, [a3], Bindings),
     peek(dir3, Dir3, [a3], Bindings),
     hooray.
+
+sync_08(Config) ->
+    [Dir1, Dir2 | _] = ?config(dirs, Config),
+    Data = ?config(data_dir, Config),
+    Content1 = contents(filename:join(Data, "1.gif")),
+    Bindings = [{a1, <<"1.gif">>, Content1}],
+    init(Dir1, []),
+    init(Dir2, []),
+    track(dir1, Dir1),
+    track(dir2, Dir2, dir1),
+    peek(dir1, Dir1, [], Bindings),
+    peek(dir2, Dir2, [], Bindings),
+    add(Dir1, a1, Bindings),
+    add(Dir2, a1, Bindings),
+    peek(dir1, Dir1, [a1], Bindings),
+    peek(dir2, Dir2, [a1], Bindings),
+    dirmon:pull(dir2, {node(), dir1}), % pull from dir1 into dir2
+    peek(dir1, Dir1, [a1], Bindings),
+    peek(dir2, Dir2, [a1], Bindings),
+    dirmon:pull(dir1, {node(), dir2}), % pull from dir2 into dir1
+    peek(dir1, Dir1, [a1], Bindings),
+    peek(dir2, Dir2, [a1], Bindings),
+    ok.
+
+sync_09(Config) ->
+    [Dir1, Dir2, Dir3 | _] = ?config(dirs, Config),
+    Data = ?config(data_dir, Config),
+    Content1 = contents(filename:join(Data, "1.gif")),
+    Content2 = contents(filename:join(Data, "2.gif")),
+    Content3 = contents(filename:join(Data, "3.gif")),
+    Bindings = [{a1, <<"1.gif">>, Content1},
+                {a2, <<"1.gif">>, Content2},
+                {a3, <<"1.gif">>, Content3},
+                {a1c, <<"1.gif.", (hash_data(Content1))/binary, ".conflict">>, Content1},
+                {a2c, <<"1.gif.", (hash_data(Content2))/binary, ".conflict">>, Content2},
+                {a3c, <<"1.gif.", (hash_data(Content3))/binary, ".conflict">>, Content3}],
+    init(Dir1, []),
+    init(Dir2, []),
+    init(Dir3, []),
+    track(dir1, Dir1),
+    track(dir2, Dir2, dir1),
+    track(dir3, Dir3, dir2),
+    peek(dir1, Dir1, [], Bindings),
+    peek(dir2, Dir2, [], Bindings),
+    peek(dir3, Dir3, [], Bindings),
+    add(Dir1, a1, Bindings),
+    add(Dir2, a2, Bindings),
+    peek(dir1, Dir1, [a1], Bindings),
+    peek(dir2, Dir2, [a2], Bindings),
+    peek(dir3, Dir3, [], Bindings),
+    dirmon:pull(dir1, {node(), dir2}), % pull from dir2 into dir1
+    peek(dir1, Dir1, [a1c,a2c], Bindings),
+    peek(dir2, Dir2, [a2], Bindings),
+    peek(dir3, Dir3, [], Bindings),
+    add(Dir3, a3, Bindings),
+    peek(dir1, Dir1, [a1c,a2c], Bindings),
+    peek(dir2, Dir2, [a2], Bindings),
+    peek(dir3, Dir3, [a3], Bindings),
+    dirmon:pull(dir1, {node(), dir3}), % pull from dir3 into dir1
+    peek(dir1, Dir1, [a1c,a2c,a3c], Bindings),
+    peek(dir2, Dir2, [a2], Bindings),
+    peek(dir3, Dir3, [a3], Bindings),
+    timer:sleep(500),
+    delete(Dir1, a1c, Bindings),
+    peek(dir1, Dir1, [a2c,a3c], Bindings),
+    peek(dir2, Dir2, [a2], Bindings),
+    peek(dir3, Dir3, [a3], Bindings),
+    dirmon:pull(dir3, {node(), dir1}), % pull from dir3 into dir1
+    peek(dir1, Dir1, [a2c,a3c], Bindings), 
+    peek(dir2, Dir2, [a2], Bindings),
+    peek(dir3, Dir3, [a2c,a3c], Bindings),
+    timer:sleep(500),
+    delete(Dir1, a3c, Bindings),
+    peek(dir1, Dir1, [a2c], Bindings),
+    peek(dir2, Dir2, [a2], Bindings),
+    peek(dir3, Dir3, [a2c,a3c], Bindings),
+    timer:sleep(500),
+    delete(Dir3, a2c, Bindings),
+    peek(dir1, Dir1, [a2c], Bindings),
+    peek(dir2, Dir2, [a2], Bindings),
+    peek(dir3, Dir3, [a3c], Bindings),
+    dirmon:pull(dir1, {node(), dir3}), % pull from dir3 into dir1
+    peek(dir1, Dir1, [a2c], Bindings),
+    peek(dir2, Dir2, [a2], Bindings),
+    peek(dir3, Dir3, [a3c], Bindings),
+    dirmon:pull(dir3, {node(), dir1}), % pull from dir1 into dir3
+    peek(dir1, Dir1, [a2c], Bindings),
+    peek(dir2, Dir2, [a2], Bindings),
+    peek(dir3, Dir3, [a3c], Bindings),
+    move(Dir1, a2c, a2, Bindings),
+    peek(dir1, Dir1, [a2], Bindings),
+    peek(dir2, Dir2, [a2], Bindings),
+    peek(dir3, Dir3, [a3c], Bindings),
+    dirmon:pull(dir1, {node(), dir3}), % pull from dir3 into dir1
+    peek(dir1, Dir1, [a2], Bindings),
+    peek(dir2, Dir2, [a2], Bindings),
+    peek(dir3, Dir3, [a3c], Bindings),
+    dirmon:pull(dir3, {node(), dir1}), % pull from dir1 into dir3
+    peek(dir1, Dir1, [a2], Bindings),
+    peek(dir2, Dir2, [a2], Bindings),
+    peek(dir3, Dir3, [a2], Bindings),
+    dirmon:pull(dir2, {node(), dir3}), % pull from dir3 into dir2
+    peek(dir1, Dir1, [a2], Bindings),
+    peek(dir2, Dir2, [a2], Bindings),
+    peek(dir3, Dir3, [a2], Bindings),
+    ok.
+
+
+
 
 
 

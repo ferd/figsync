@@ -66,17 +66,18 @@ post_pull(Key, undefined, _Tmp, Local) ->
 post_pull(Key, {conflict, Vals}, Tmp, Local) ->
     %% Find all conflicting things
     %% Does this function call work with unicode?
-    FileNames = filelib:wildcard(binary_to_list(<<Key/binary, "*.conflict">>), Tmp),
-    Tot = length(Vals),
-    Tot = length(FileNames),
+    FileNames = conflict_filenames(Key, Tmp),
+    %% The lengths may vary if we're merging through a partial conflict
+    %% resolution, but Vals should always be greater
+    true = length(Vals) >= length(FileNames),
     [file:copy(filename:join([Tmp, Name]), filename:join([Local,Name]))
      || Name <- FileNames],
     [file:delete(filename:join([Tmp, Name])) || Name <- FileNames],
     ok;
 post_pull(Key, {ok,_Val}, Tmp, Local) ->
     %% Kill all the conflict files, if any
-    TmpFileNames = filelib:wildcard(binary_to_list(<<Key/binary, "*.conflict">>), Tmp),
-    FileNames = filelib:wildcard(binary_to_list(<<Key/binary, "*.conflict">>), binary_to_list(Local)),
+    TmpFileNames = conflict_filenames(Key, Tmp),
+    FileNames = conflict_filenames(Key, binary_to_list(Local)),
     [file:delete(filename:join([Local,Path])) || Path <- FileNames],
     %% Move the current thing
     file:copy(filename:join([Tmp, Key]),
@@ -112,7 +113,10 @@ fetch_remote_conflicts(Key, {conflict, List=[_|_]}, RemoteDir, TmpDir, Node) ->
         List).
 
 fetch_local(Key, LocalDir, TmpDir) ->
-    fetch_local(Key, Key, LocalDir, TmpDir).
+    %% Fetch both conflicting files (if any) and the original one
+    Conflicts = conflict_filenames(Key, LocalDir),
+    [fetch_local(K, K, LocalDir, TmpDir) || K <- [Key | Conflicts]],
+    ok.
 
 fetch_local(Key, TmpKey, LocalDir, TmpDir) ->
     Tmp = filename:join([TmpDir, TmpKey]),
@@ -137,6 +141,12 @@ fetch_remote(Key, TmpKey, RemoteDir, TmpDir, Node) ->
 
 conflict_suffix(Key, Hash) ->
     <<Key/binary, ".", Hash/binary, ".conflict">>.
+
+conflict_filenames(Key, Pwd) when is_binary(Pwd) ->
+    %% Should probably find why we get this thing in here
+    conflict_filenames(Key, binary_to_list(Pwd));
+conflict_filenames(Key, Pwd) ->
+    filelib:wildcard(binary_to_list(<<Key/binary, "*.conflict">>), Pwd).
 
 skip_remote_fetch(Name) ->
     %% if the file is on disk already in the TMP dir, skip the remote fetch

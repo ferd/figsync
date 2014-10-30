@@ -58,9 +58,13 @@ copy_remote_to_local(Node, Remote, Local) ->
     stream_to_disk(Ref, Local).
 
 stream_file(To, Ref, File) ->
-    To ! {Ref, self()}, % let the other monitor us
-    {ok, F} = file:open(File, [read,raw,binary]),
-    stream_file(To, Ref, F, 0).
+    case file:open(File, [read,raw,binary]) of
+        {error, enoent} ->
+            To ! {Ref, enoent};
+        {ok, F} ->
+            To ! {Ref, self()}, % let the other monitor us
+            stream_file(To, Ref, F, 0)
+    end.
 
 stream_file(To, Ref, F, Offset) ->
     case file:pread(F, Offset, ?BATCH) of
@@ -73,11 +77,15 @@ stream_file(To, Ref, F, Offset) ->
     end.
 
 stream_to_disk(Ref, Path) ->
-    %% Open the file, monitor the remote end to avoid
-    %% hanging, then loop in.
-    {ok, F} = file:open(Path, [write,raw]),
     receive
+        {Ref, enoent} -> 
+            %% remote file doesn't exist -- possibly a partial conflict
+            %% resolution, or maybe a race.
+            missing;
         {Ref, Pid} when is_pid(Pid) ->
+            %% Open the file, monitor the remote end to avoid
+            %% hanging, then loop in.
+            {ok, F} = file:open(Path, [write,raw]),
             Monitor = erlang:monitor(process, Pid),
             stream_to_disk(Ref, F, Monitor)
     after 15000 ->
